@@ -35,35 +35,34 @@ import (
 	"encoding/xml"
 	"errors"
 	"io/ioutil"
-	"log"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
 const (
-	SDB_REGION_EU_WEST_1 string = "sdb.eu-west-1.amazonaws.com"
-	DATE_FORMAT          string = "2006-01-02T15:04:05-07:00"
+	SDBRegionEUWest1 string = "sdb.eu-west-1.amazonaws.com"
 )
 
 var (
-	accessKey string
-	secretKey string
-	region    string
+	accessKey  string
+	secretKey  string
+	region     string
+	dateFormat string = "2006-01-02T15:04:05-07:00"
 )
 
 type parameters map[string]string
 
-type Error struct {
-	Code    string `xml:"Error>Code"`
-	Message string `xml:"Error>Message"`
+type SimpleDBError struct {
+	Code      string `xml:"Error>Code"`
+	Message   string `xml:"Error>Message"`
+	RequestId string
 }
 
 type Response struct {
-	Errors    []Error
+	Errors    []SimpleDBError
 	RequestId string
 }
 
@@ -124,16 +123,17 @@ type Item struct {
 }
 
 type SimpleDB struct {
+	RawResponse string
+	RawRequest  string
 	p           url.Values
 	accessKey   string
 	secretKey   string
 	region      string
-	Error       Response
-	RawResponse string
-	RawRequest  string
 }
 
-// Internal methods used for communication
+func (err SimpleDBError) Error() string {
+	return err.Code + ": " + err.Message
+}
 
 func (sdb *SimpleDB) sign(s string) string {
 	mac := hmac.New(sha256.New, []byte(sdb.secretKey))
@@ -142,7 +142,6 @@ func (sdb *SimpleDB) sign(s string) string {
 }
 
 func (sdb *SimpleDB) resetParameters() {
-	sdb.Error = Response{}
 	sdb.RawRequest = ""
 	sdb.RawResponse = ""
 	sdb.p = make(url.Values)
@@ -154,7 +153,7 @@ func (sdb *SimpleDB) resetParameters() {
 
 	var t time.Time
 	t = time.Now().UTC()
-	sdb.p.Add("Timestamp", t.Format(DATE_FORMAT))
+	sdb.p.Add("Timestamp", t.Format(dateFormat))
 }
 
 func (sdb *SimpleDB) unmarshal(r *http.Response, v interface{}) (err error) {
@@ -188,8 +187,11 @@ func (sdb *SimpleDB) post(v interface{}) (err error) {
 		if err != nil {
 			return
 		}
-		sdb.Error = v
-		return errors.New("Error occured, see SimpleDB.Error for details")
+		if len(v.Errors) > 0 {
+			return SimpleDBError{Code: v.Errors[0].Code, Message: v.Errors[0].Message, RequestId: v.Errors[0].RequestId}
+		} else {
+			return errors.New(r.Status)
+		}
 	}
 
 	err = sdb.unmarshal(r, v)
@@ -228,8 +230,8 @@ func (i *Item) RemoveAttribute(a Attribute) Attribute {
 }
 
 // Constructor
-func NewSimpleDB(a string, s string, r string) *SimpleDB {
-	sdb := &SimpleDB{accessKey: a, secretKey: s, region: r}
+func NewSimpleDB(a string, s string, r string) SimpleDB {
+	sdb := SimpleDB{accessKey: a, secretKey: s, region: r}
 
 	sdb.resetParameters()
 
@@ -328,7 +330,7 @@ func (sdb *SimpleDB) GetAttributes(domain string, itemName string) (r GetAttribu
 	return
 }
 
-func (sdb *SimpleDB) DeleteAttributes(domain string, itemName string) (r DeleteAttributesResponse, err error) {
+func (sdb *SimpleDB) DeleteItem(domain string, itemName string) (r DeleteAttributesResponse, err error) {
 	sdb.resetParameters()
 
 	sdb.p.Add("Action", "DeleteAttributes")
@@ -348,45 +350,5 @@ func (sdb *SimpleDB) Select(q string) (r SelectResponse, err error) {
 
 	err = sdb.post(&r)
 
-	return
-}
-
-type SDBWriter struct {
-	sdb    *SimpleDB
-	Domain string
-	m      sync.Mutex
-	buffer []Item
-}
-
-func NewSDBWriter(sdb *SimpleDB, domain string) (sw *SDBWriter, err error) {
-	_, err = sdb.CreateDomain(domain)
-	if err != nil {
-		return
-	}
-	return &SDBWriter{sdb: sdb, Domain: domain}, err
-}
-
-func (s *SDBWriter) Write(p []byte) (n int, err error) {
-	s.m.Lock()
-	defer s.m.Unlock()
-	t := time.Now().UTC()
-	name := strconv.FormatInt(t.Unix(), 10) + "." + strconv.Itoa(t.Nanosecond())
-	i := Item{Name: name}
-	i.AddAttribute("msg", strings.TrimSpace(string(p)))
-
-	s.buffer = append(s.buffer, i)
-	if len(s.buffer) == 25 {
-		tmp := make([]Item, len(s.buffer))
-		copy(tmp, s.buffer)
-		go func() {
-			_, err = s.sdb.BatchPutAttributes(s.Domain, tmp)
-			if err != nil {
-				log.Println(err)
-			}
-		}()
-		s.buffer = []Item{}
-	}
-
-	n = len(p)
 	return
 }
