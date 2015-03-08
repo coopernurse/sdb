@@ -108,7 +108,8 @@ type DeleteAttributesResponse struct {
 }
 
 type SelectResponse struct {
-	Items []Item `xml:"SelectResult>Item"`
+	Items     []Item `xml:"SelectResult>Item"`
+	NextToken string `xml:"SelectResult>NextToken"`
 }
 
 type Attribute struct {
@@ -298,7 +299,7 @@ func (sdb *SimpleDB) PutAttributes(domain string, i *Item) (r PutAttributesRespo
 	return
 }
 
-func (sdb *SimpleDB) BatchPutAttributes(domain string, items []Item) (r PutAttributesResponse, err error) {
+func (sdb *SimpleDB) BatchPutAttributes(domain string, items []*Item) (r PutAttributesResponse, err error) {
 	sdb.resetParameters()
 
 	sdb.p.Add("Action", "BatchPutAttributes")
@@ -342,13 +343,20 @@ func (sdb *SimpleDB) DeleteItem(domain string, itemName string) (r DeleteAttribu
 	return
 }
 
-func (sdb *SimpleDB) Select(q string) (r SelectResponse, err error) {
+func (sdb *SimpleDB) SelectWithToken(q, nextToken string) (r SelectResponse, err error) {
 	sdb.resetParameters()
 
 	sdb.p.Add("Action", "Select")
 	sdb.p.Add("SelectExpression", q)
+	if nextToken != "" {
+		sdb.p.Add("NextToken", nextToken)
+	}
 
 	err = sdb.post(&r)
 
 	return
+}
+
+func (sdb *SimpleDB) Select(q string) (r SelectResponse, err error) {
+	return sdb.SelectWithToken(q, "")
 }
